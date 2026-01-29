@@ -1,0 +1,31 @@
+# --- OS / editor ---
+.DS_Store
+*.swp
+*.swo
+*~
+
+# --- Config copies (keep example committed) ---
+config/*.sh
+!config/config.example.sh
+
+# --- Common run/output dirs (usually huge) ---
+mph/
+runs/
+output/
+logs/
+tmp/
+
+# --- Genotypes / GRM ---
+*.bed
+*.bim
+*.fam
+*.grm.bin
+*.grm.N.bin
+*.grm.id
+*.grms.txt
+
+# --- MPH results / R ---
+*.RData
+.Rhistory
+.RData
+.Rproj.user

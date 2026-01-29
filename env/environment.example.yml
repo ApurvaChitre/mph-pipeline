@@ -1,0 +1,25 @@
+name: genomic_sem
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  # Core runtime
+  - python>=3.10
+  - r-base>=4.2
+
+  # R packages used by pipeline scripts
+  - r-data.table
+  - r-optparse
+  - r-dplyr
+  - r-readr
+  - r-stringr
+  # Matrix is usually shipped with R, but keeping it explicit is fine if available
+  - r-matrix
+
+  # CLI tools used by pipeline
+  - plink
+  - perl
+
+  # Notes:
+  # - MPH is provided on TSCC at /tscc/projects/ps-palmer/software/local/src/mph/mph
+  #   and is NOT installed by this conda env.
