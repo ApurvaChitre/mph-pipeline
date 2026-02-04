@@ -72,6 +72,82 @@ mkdir -p "$MPH_DIR"/{pheno,genotypes,grm,reml,gsem,logs,tmp}
 MAPPING_FILE="${MPH_DIR}/pheno/pheno_cohort_project_dict.csv"
 
 # -------------------------------------------------------------------
+# Step 0: genotype IDs are "king" (filter processed pheno early)
+# -------------------------------------------------------------------
+PHENO_SOURCE="${PHENO_SOURCE:-processed}"
+
+# The genotype file used for MPH is whatever the user supplies in the config:
+# - If SUBSET_GENO_BFILE is provided, that is the analysis genotype set.
+# - Otherwise GENO_BFILE is the full set that will be subsetted.
+KING_BFILE=""
+if [[ -n "${SUBSET_GENO_BFILE:-}" ]]; then
+  KING_BFILE="${SUBSET_GENO_BFILE}"
+else
+  : "${GENO_BFILE:?GENO_BFILE must be set in config (or set SUBSET_GENO_BFILE)}"
+  KING_BFILE="${GENO_BFILE}"
+fi
+
+KING_FAM="${KING_BFILE}.fam"
+if [[ ! -f "${KING_FAM}" ]]; then
+  echo "ERROR: King genotype .fam not found: ${KING_FAM}" >&2
+  exit 1
+fi
+
+KING_IDS="${MPH_DIR}/genotypes/king_genotyped_ids.txt"
+awk '{print $1}' "${KING_FAM}" | sort -u > "${KING_IDS}"
+echo "[prep] Genotyped ID universe: $(wc -l < "${KING_IDS}" | awk '{print $1}') (from ${KING_FAM})"
+
+# If we're building phenotypes from the processed wide file, filter that file FIRST
+# to genotyped IDs (rfid). This prevents phenotype-only IDs from entering cov/pheno outputs.
+if [[ "${PHENO_SOURCE}" == "processed" ]]; then
+  need_processed=0
+  if [[ ! -f "${MAPPING_FILE}" ]]; then
+    need_processed=1
+  fi
+  if [[ ! -f "${MPH_DIR}/pheno/combined_phenotype.csv" || ! -f "${MPH_DIR}/pheno/indicator_covariates.csv" ]]; then
+    need_processed=1
+  fi
+
+  if [[ "${need_processed}" -eq 1 ]]; then
+    : "${PROCESSED_FILE:?PROCESSED_FILE must be set in config for PHENO_SOURCE=processed}"
+    if [[ ! -f "${PROCESSED_FILE}" ]]; then
+      echo "ERROR: PROCESSED_FILE not found: ${PROCESSED_FILE}" >&2
+      exit 1
+    fi
+
+    FILTERED_PROCESSED="${MPH_DIR}/tmp/processed_data_ready.genotyped.csv"
+
+    if [[ ! -f "${FILTERED_PROCESSED}" || "${FILTERED_PROCESSED}" -ot "${PROCESSED_FILE}" || "${FILTERED_PROCESSED}" -ot "${KING_FAM}" ]]; then
+      echo "[prep] Filtering processed file to genotyped IDs via column 'rfid' -> ${FILTERED_PROCESSED}"
+      Rscript - <<RS
+suppressPackageStartupMessages(library(data.table))
+processed_file <- "${PROCESSED_FILE}"
+ids_file       <- "${KING_IDS}"
+out_file       <- "${FILTERED_PROCESSED}"
+
+dt <- fread(processed_file)
+if (!("rfid" %in% names(dt))) {
+  stop("Processed file must contain column 'rfid': ", processed_file)
+}
+dt[, rfid := as.character(rfid)]
+
+ids <- fread(ids_file, header = FALSE)[[1]]
+ids <- as.character(ids)
+
+dt2 <- dt[rfid %in% ids]
+fwrite(dt2, out_file, sep = ",")
+cat("[prep] Filtered processed rows: ", nrow(dt), " -> ", nrow(dt2), "\n", sep = "")
+RS
+    else
+      echo "[prep] Using existing filtered processed file: ${FILTERED_PROCESSED}"
+    fi
+
+    # Use the filtered file for downstream mapping/stacking in this job
+    PROCESSED_FILE="${FILTERED_PROCESSED}"
+  fi
+fi
+
+# -------------------------------------------------------------------
 # Step 1: build mapping file (if needed)
 # -------------------------------------------------------------------
 if [[ -f "$MAPPING_FILE" ]]; then
@@ -107,7 +183,6 @@ fi
 # -------------------------------------------------------------------
 PHENO_OUT="${MPH_DIR}/pheno/combined_phenotype.csv"
 COV_OUT="${MPH_DIR}/pheno/indicator_covariates.csv"
-PHENO_SOURCE="${PHENO_SOURCE:-processed}"
 
 if [[ -f "$PHENO_OUT" && -f "$COV_OUT" ]]; then
   echo "[prep] Found existing stacked phenotype + covariates. Skipping."
@@ -138,21 +213,37 @@ else
 fi
 
 # -------------------------------------------------------------------
+# Step 2b: enforce genotype-supported sample set (safeguard)
+# -------------------------------------------------------------------
+# Even if the user re-runs (and pheno/cov already exist), ensure we never carry
+# phenotype-only IDs forward.
+if [[ -f "${COV_OUT}" ]]; then
+  echo "[prep] Filtering pheno/cov outputs to genotyped IDs (safeguard) ..."
+  tmp_cov="${COV_OUT}.tmp"
+  awk -F',' 'FNR==NR{ids[$1]=1; next} FNR==1{print; next} ($1 in ids){print}' "${KING_IDS}" "${COV_OUT}" > "${tmp_cov}"
+  mv -f "${tmp_cov}" "${COV_OUT}"
+fi
+if [[ -f "${PHENO_OUT}" ]]; then
+  tmp_pheno="${PHENO_OUT}.tmp"
+  awk -F',' 'FNR==NR{ids[$1]=1; next} FNR==1{print; next} ($1 in ids){print}' "${KING_IDS}" "${PHENO_OUT}" > "${tmp_pheno}"
+  mv -f "${tmp_pheno}" "${PHENO_OUT}"
+fi
+
+# -------------------------------------------------------------------
 # Step 3: create ID list for genotype subsetting
 # -------------------------------------------------------------------
 IDS_1COL="${MPH_DIR}/genotypes/subset_ids.txt"
 KEEP_FILE="${IDS_1COL}"
-if [[ ! -f "$IDS_1COL" ]]; then
-  echo "[prep] Creating subset_ids.txt from covariates..."
-  cut -d',' -f1 "${COV_OUT}" | tail -n +2 > "${IDS_1COL}"
-fi
+
+# Always regenerate: it is derived from the current covariate file.
+echo "[prep] Creating subset_ids.txt from covariates..."
+cut -d',' -f1 "${COV_OUT}" | tail -n +2 > "${IDS_1COL}"
 
 if [[ "${PLINK_KEEP_FLAG:-"--keep-fam"}" == "--keep" ]]; then
   KEEP_FILE="${MPH_DIR}/genotypes/subset_keep.txt"
-  if [[ ! -f "$KEEP_FILE" ]]; then
-    # naive default: FID=IID=ID
-    awk '{print $1, $1}' "${IDS_1COL}" > "${KEEP_FILE}"
-  fi
+  echo "[prep] Creating subset_keep.txt (FID=IID=ID) for PLINK --keep ..."
+  # naive default: FID=IID=ID
+  awk '{print $1, $1}' "${IDS_1COL}" > "${KEEP_FILE}"
 fi
 
 # -------------------------------------------------------------------
