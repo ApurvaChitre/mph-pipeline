@@ -2,7 +2,7 @@
 
 This repository provides resources and scripts to estimate genetic covariance and variance-covariance matrices required for the **Genomic SEM R package**. The estimation is performed using **[MPH (MINQUE for Partitioning Heritability)](https://pmc.ncbi.nlm.nih.gov/articles/PMC11093526/)**, customized specifically for research involving **Heterogeneous Stock (HS) rats**.
 
-**Pipeline automation (TSCC/Slurm):** For an end-to-end, coworker-friendly runner (with `sbatch` dependencies and a single config file), see `docs/RUNNING_PIPELINE.md`.
+**Pipeline automation (TSCC/Slurm):** For an end-to-end runner (with `sbatch` dependencies and a single config file), see `docs/RUNNING_PIPELINE.md`.
 
 > **Note:** The automated runner in this repo is designed for the **TSCC HPC cluster (Slurm)**. If you are running on a different system (no Slurm), you can still use the underlying scripts and run the stages manually (see `docs/RUNNING_PIPELINE.md`).
 
